@@ -36,9 +36,9 @@ const MARGIN_X: i32 = 120;
 
 enum State {
     Listening { last_pen: Option<Instant> },
-    Drinking { stage: u32, next: Instant, region: BBox },
+    Drinking { stage: u32, next: Instant, region: BBox, rx: mpsc::Receiver<Result<String, String>> },
     Thinking { rx: mpsc::Receiver<Result<String, String>>, pulse: Instant, blot_on: bool },
-    Replying { plan: WritePlan, next: Instant },
+    Replying { plan: WritePlan, next: Instant, rx: Option<mpsc::Receiver<Result<String, String>>> },
     Lingering { until: Instant, region: BBox },
     FadingReply { stage: u32, next: Instant, region: BBox },
 }
@@ -48,6 +48,8 @@ struct WritePlan {
     stroke_i: usize,
     point_i: usize,
     region: BBox,
+    /// Where the next streamed chunk's first line starts.
+    next_y: i32,
 }
 
 fn main() {
@@ -212,13 +214,21 @@ fn run() -> std::io::Result<()> {
                     if let Err(e) = user_ink.to_png(&surf, PNG_PATH) {
                         eprintln!("riddle: rasterize failed: {e}");
                     }
+                    // Ask NOW: the model streams while the diary drinks the
+                    // ink, hiding most of the reply latency in the animation.
+                    let (tx, rx) = mpsc::channel();
+                    if let Some(ref o) = oracle {
+                        o.ask(PNG_PATH, tx);
+                    } else {
+                        let _ = tx.send(Err("no oracle".into()));
+                    }
                     let region = user_ink.bbox;
-                    State::Drinking { stage: 0, next: Instant::now(), region }
+                    State::Drinking { stage: 0, next: Instant::now(), region, rx }
                 }
                 _ => State::Listening { last_pen },
             },
 
-            State::Drinking { stage, next, region } => {
+            State::Drinking { stage, next, region, rx } => {
                 const STAGES: u32 = 14;
                 if Instant::now() >= next {
                     ink::dissolve_pass(&mut surf, region, stage, STAGES);
@@ -226,18 +236,12 @@ fn run() -> std::io::Result<()> {
                     disp.update(x, y, w, h, true);
                     if stage + 1 >= STAGES {
                         user_ink.clear();
-                        let (tx, rx) = mpsc::channel();
-                        if let Some(ref o) = oracle {
-                            o.ask(PNG_PATH, tx);
-                        } else {
-                            let _ = tx.send(Err("no oracle".into()));
-                        }
                         State::Thinking { rx, pulse: Instant::now(), blot_on: false }
                     } else {
-                        State::Drinking { stage: stage + 1, next: Instant::now() + Duration::from_millis(70), region }
+                        State::Drinking { stage: stage + 1, next: Instant::now() + Duration::from_millis(70), region, rx }
                     }
                 } else {
-                    State::Drinking { stage, next, region }
+                    State::Drinking { stage, next, region, rx }
                 }
             }
 
@@ -245,15 +249,17 @@ fn run() -> std::io::Result<()> {
                 Ok(result) => {
                     surf.fill_rect(SCREEN_W / 2 - 14, SCREEN_H / 2 - 14, 28, 28, WHITE);
                     disp.update(SCREEN_W as i32 / 2 - 14, SCREEN_H as i32 / 2 - 14, 28, 28, true);
-                    let text = match result {
-                        Ok(t) => t,
+                    // First streamed chunk: start writing now; keep the
+                    // receiver so the rest of the reply can append itself.
+                    let (text, rx) = match result {
+                        Ok(t) => (t, Some(rx)),
                         Err(e) => {
                             eprintln!("riddle: oracle failed: {e}");
-                            "…".to_string()
+                            ("…".to_string(), None)
                         }
                     };
-                    let plan = plan_reply(&font, &text);
-                    State::Replying { plan, next: Instant::now() }
+                    let plan = plan_reply(&font, &text, None);
+                    State::Replying { plan, next: Instant::now(), rx }
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     if pulse.elapsed() >= Duration::from_millis(600) {
@@ -272,7 +278,26 @@ fn run() -> std::io::Result<()> {
                 Err(mpsc::TryRecvError::Disconnected) => State::Listening { last_pen: None },
             },
 
-            State::Replying { mut plan, next } => {
+            State::Replying { mut plan, next, mut rx } => {
+                // More of the reply may still be streaming in: append each
+                // new chunk below what is already planned, mid-animation.
+                if let Some(ref r) = rx {
+                    let drop_rx = match r.try_recv() {
+                        Ok(Ok(more)) => {
+                            append_reply(&font, &mut plan, &more);
+                            false
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("riddle: oracle failed mid-reply: {e}");
+                            true
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => true,
+                        Err(mpsc::TryRecvError::Empty) => false,
+                    };
+                    if drop_rx {
+                        rx = None;
+                    }
+                }
                 if Instant::now() >= next {
                     let mut dirty = BBox::empty();
                     let mut budget = 26;
@@ -298,16 +323,16 @@ fn run() -> std::io::Result<()> {
                         let (x, y, w, h) = dirty.rect();
                         disp.update(x, y, w, h, true);
                     }
-                    if plan.stroke_i >= plan.strokes.len() {
+                    if plan.stroke_i >= plan.strokes.len() && rx.is_none() {
                         let chars: usize = plan.strokes.iter().map(|s| s.len()).sum();
                         let linger = Duration::from_millis(4000 + (chars as u64) * 2);
                         let region = plan.region;
                         State::Lingering { until: Instant::now() + linger.min(Duration::from_secs(20)), region }
                     } else {
-                        State::Replying { plan, next: Instant::now() + Duration::from_millis(14) }
+                        State::Replying { plan, next: Instant::now() + Duration::from_millis(14), rx }
                     }
                 } else {
-                    State::Replying { plan, next }
+                    State::Replying { plan, next, rx }
                 }
             }
 
@@ -345,13 +370,14 @@ fn run() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Lay out the reply text and produce screen-space strokes.
-fn plan_reply(font: &FontRef, text: &str) -> WritePlan {
+/// Lay out reply text and produce screen-space strokes. `y_start` continues a
+/// streamed reply below its previous chunk; None places the first chunk.
+fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
     let max_w = (SCREEN_W as i32 - 2 * MARGIN_X) as f32;
     let lines = script::wrap(font, text, REPLY_PX, max_w);
     let line_h = (REPLY_PX * 1.25) as i32;
     let total_h = line_h * lines.len() as i32;
-    let mut y = ((SCREEN_H as i32 - total_h) / 3).max(60);
+    let mut y = y_start.unwrap_or(((SCREEN_H as i32 - total_h) / 3).max(60));
     let mut strokes = Vec::new();
     let mut region = BBox::empty();
     let mut seed = 0x1234u32;
@@ -376,5 +402,17 @@ fn plan_reply(font: &FontRef, text: &str) -> WritePlan {
         y += line_h;
     }
 
-    WritePlan { strokes, stroke_i: 0, point_i: 0, region }
+    WritePlan { strokes, stroke_i: 0, point_i: 0, region, next_y: y }
+}
+
+/// Splice a streamed continuation chunk into a running write animation.
+fn append_reply(font: &FontRef, plan: &mut WritePlan, more: &str) {
+    let cont = plan_reply(font, more, Some(plan.next_y));
+    if cont.strokes.is_empty() {
+        return;
+    }
+    plan.region.add(cont.region.x0, cont.region.y0, 0);
+    plan.region.add(cont.region.x1, cont.region.y1, 0);
+    plan.strokes.extend(cont.strokes);
+    plan.next_y = cont.next_y;
 }

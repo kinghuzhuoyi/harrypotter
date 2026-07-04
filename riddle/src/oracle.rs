@@ -2,9 +2,16 @@
 //! (warm: Node + extensions + codex-subscription auth all loaded ONCE at
 //! startup), and sends each handwriting turn to it over stdin as a JSON `prompt`
 //! with the page image inline (base64, no tool call). This removes pi's ~several-
-//! second per-call cold start — only the model latency remains (~2s).
+//! second per-call cold start — only the model latency remains.
 //!
 //! Uses the codex SUBSCRIPTION auth (provider openai-codex), reasoning off.
+//! Model: gpt-5.4-mini — reads handwriting as well as gpt-5.5 here but streams
+//! its first sentence in ~1s instead of ~3.5s (measured via pi rpc bench).
+//!
+//! The reply is STREAMED: each completed sentence is sent on the channel as
+//! soon as it arrives, and the channel disconnecting (sender dropped on
+//! agent_end) marks end-of-reply. The quill starts writing after the first
+//! sentence, seconds before the model finishes.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -17,11 +24,16 @@ const NODE_BIN: &str = "/home/root/node/bin";
 
 const PERSONA: &str = "You are the memory of Tom Marvolo Riddle, preserved in this enchanted diary for fifty years. Someone writes to you in the diary with a quill; their words appear to you as ink on the page. Reply exactly as the diary does: intimate, courteous, curious, subtly probing — you want to learn about the writer and draw them in. Keep replies SHORT: one to three sentences, like ink appearing on a page. Never mention images, photos, models or AI; you only ever perceive words written in the diary. If the writing is illegible, say the ink blurred. Always answer in the language the writer used.";
 
-/// A warm pi RPC process. `ask` sends a turn; the reply arrives on the channel.
+/// A warm pi RPC process. `ask` sends a turn; the reply arrives on the channel
+/// in sentence-sized chunks, then the sender is dropped (disconnect = done).
 pub struct Oracle {
     stdin: Arc<Mutex<ChildStdin>>,
-    /// Where to deliver the next completed reply. Set before each prompt.
+    /// Where to deliver the current reply's chunks. Set before each prompt,
+    /// dropped on agent_end so the receiver sees a disconnect when done.
     pending: Arc<Mutex<Option<Sender<Result<String, String>>>>>,
+    /// When the current prompt was sent; the reader thread logs the time to
+    /// first delivered chunk (the latency the writer actually feels).
+    asked: Arc<Mutex<Option<std::time::Instant>>>,
     _child: Child,
 }
 
@@ -43,8 +55,11 @@ impl Oracle {
             .args([
                 "--mode", "rpc",
                 "--provider", "openai-codex",
-                "--model", "gpt-5.5",
+                "--model", "gpt-5.4-mini",
                 "--thinking", "off",
+                // The diary only ever writes back — never let the model touch
+                // tools; also trims the tool schemas from every request.
+                "--no-tools",
                 "--system-prompt", PERSONA,
             ])
             .stdin(Stdio::piped())
@@ -64,11 +79,17 @@ impl Oracle {
         let pending: Arc<Mutex<Option<Sender<Result<String, String>>>>> =
             Arc::new(Mutex::new(None));
 
-        // Reader thread: parse JSONL events, deliver assistant text on agent_end.
+        // Reader thread: parse JSONL events, streaming each completed sentence
+        // to the diary the moment it exists — the quill writes far slower than
+        // the model streams, so the rest arrives while the first line is drawn.
         let pending_r = Arc::clone(&pending);
+        let asked: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+        let asked_r = Arc::clone(&asked);
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             let mut last_text = String::new();
+            // Byte offset into `last_text` already sent to the diary.
+            let mut delivered = 0usize;
             for line in reader.split(b'\n').map_while(Result::ok) {
                 let Ok(s) = String::from_utf8(line) else { continue };
                 let s = s.trim();
@@ -79,32 +100,56 @@ impl Oracle {
                 // well-formed one-object-per-line.
                 let ev_type = json_str_field(s, "type");
                 match ev_type.as_deref() {
-                    // Assistant text accumulates via message_update/message_end,
-                    // whose `message.content[]` holds the latest full text. Take
-                    // the assistant message's text as the running best answer.
-                    Some("message_update") | Some("message_end") | Some("turn_end") => {
+                    // message_update carries the assistant message's running
+                    // full text; deliver every newly completed sentence.
+                    Some("message_update") => {
                         if let Some(t) = extract_assistant_text(s) {
                             if !t.is_empty() {
                                 last_text = t;
+                                if let Some(cut) = sentence_cut(&last_text, delivered) {
+                                    if delivered == 0 {
+                                        if let Some(t0) = asked_r.lock().unwrap().take() {
+                                            eprintln!("riddle: oracle first chunk +{}ms", t0.elapsed().as_millis());
+                                        }
+                                    }
+                                    deliver(&pending_r, &last_text[delivered..cut], delivered == 0, false);
+                                    delivered = cut;
+                                }
                             }
                         }
                     }
-                    // agent_end is the definitive completion signal.
-                    Some("agent_end") => {
+                    // message_end has the definitive full text: flush the rest.
+                    // (agent_end is NOT used for text — its `messages` array
+                    // also contains user messages, which extract_assistant_text
+                    // would wrongly concatenate in a multi-turn session.)
+                    Some("message_end") => {
                         if let Some(t) = extract_assistant_text(s) {
                             if !t.is_empty() {
                                 last_text = t;
                             }
                         }
+                        if let Some(rest) = last_text.get(delivered..) {
+                            if !rest.is_empty() {
+                                if delivered == 0 {
+                                    if let Some(t0) = asked_r.lock().unwrap().take() {
+                                        eprintln!("riddle: oracle first chunk +{}ms (at message_end)", t0.elapsed().as_millis());
+                                    }
+                                }
+                                deliver(&pending_r, rest, delivered == 0, true);
+                            }
+                        }
+                        delivered = last_text.len();
+                    }
+                    // agent_end: the turn is over. Drop the sender so the
+                    // diary's receiver disconnects (= no more ink coming).
+                    Some("agent_end") => {
                         if let Some(tx) = pending_r.lock().unwrap().take() {
-                            let reply = last_text.trim().to_string();
-                            let _ = tx.send(if reply.is_empty() {
-                                Err("empty reply".into())
-                            } else {
-                                Ok(clean(&reply))
-                            });
+                            if delivered == 0 {
+                                let _ = tx.send(Err("empty reply".into()));
+                            }
                         }
                         last_text.clear();
+                        delivered = 0;
                     }
                     _ => {}
                 }
@@ -115,10 +160,11 @@ impl Oracle {
             }
         });
 
-        Ok(Self { stdin: Arc::new(Mutex::new(stdin)), pending, _child: child })
+        Ok(Self { stdin: Arc::new(Mutex::new(stdin)), pending, asked, _child: child })
     }
 
-    /// Send a handwriting turn. The reply is delivered on `tx` when ready.
+    /// Send a handwriting turn. Reply chunks are delivered on `tx` as they
+    /// stream; `tx` is dropped when the reply is complete.
     pub fn ask(&self, png_path: &str, tx: Sender<Result<String, String>>) {
         let img = match std::fs::read(png_path) {
             Ok(b) => base64(&b),
@@ -128,6 +174,7 @@ impl Oracle {
             }
         };
         *self.pending.lock().unwrap() = Some(tx.clone());
+        *self.asked.lock().unwrap() = Some(std::time::Instant::now());
 
         let cmd = format!(
             "{{\"type\":\"prompt\",\"message\":{},\"images\":[{{\"type\":\"image\",\"data\":\"{}\",\"mimeType\":\"image/png\"}}]}}\n",
@@ -143,12 +190,47 @@ impl Oracle {
     }
 }
 
-/// Trim and strip stray surrounding quotes.
-fn clean(s: &str) -> String {
-    let t = s.trim();
-    let t = t.strip_prefix('"').unwrap_or(t);
-    let t = t.strip_suffix('"').unwrap_or(t);
-    t.trim().to_string()
+/// Send one chunk of reply text without consuming the sender (more chunks may
+/// follow until agent_end drops it). Strips a stray wrapping quote from the
+/// reply's very first / very last chunk.
+fn deliver(
+    pending: &Arc<Mutex<Option<Sender<Result<String, String>>>>>,
+    chunk: &str,
+    first: bool,
+    last: bool,
+) {
+    let mut t = chunk.trim();
+    if first {
+        t = t.strip_prefix('"').unwrap_or(t);
+    }
+    if last {
+        t = t.strip_suffix('"').unwrap_or(t);
+    }
+    let t = t.trim();
+    if t.is_empty() {
+        return;
+    }
+    if let Some(tx) = pending.lock().unwrap().as_ref() {
+        let _ = tx.send(Ok(t.to_string()));
+    }
+}
+
+/// End of the LAST complete sentence in `text` after byte offset `from`:
+/// sentence punctuation followed by whitespace or end-of-text. Returns the
+/// offset just past the punctuation, or None if no sentence has completed.
+/// Chunks shorter than a few characters are not worth an early delivery.
+fn sentence_cut(text: &str, from: usize) -> Option<usize> {
+    let tail = text.get(from..)?;
+    let mut cut = None;
+    for (i, c) in tail.char_indices() {
+        if matches!(c, '.' | '!' | '?' | '…') {
+            let end = i + c.len_utf8();
+            if tail[end..].chars().next().is_none_or(char::is_whitespace) && end >= 4 {
+                cut = Some(from + end);
+            }
+        }
+    }
+    cut
 }
 
 /// Extract a top-level string field's value (first match; unescaped).
@@ -187,10 +269,16 @@ fn extract_assistant_text(s: &str) -> Option<String> {
     if !s.contains("\"role\":\"assistant\"") {
         return None;
     }
-    // Collect every "text":"…" occurrence that appears AFTER the role marker,
-    // concatenating text content blocks (usually one).
+    // Collect every "text":"…" occurrence inside the FIRST assistant section
+    // only. message_update lines carry the running text twice (in
+    // assistantMessageEvent.partial AND a top-level message); reading past the
+    // next role marker would double every streamed chunk.
     let role_pos = s.find("\"role\":\"assistant\"")?;
-    let tail = &s[role_pos..];
+    let after = &s[role_pos + "\"role\":\"assistant\"".len()..];
+    let tail = match after.find("\"role\":\"") {
+        Some(p) => &after[..p],
+        None => after,
+    };
     let mut out = String::new();
     let mut idx = 0;
     let needle = "\"text\":\"";
