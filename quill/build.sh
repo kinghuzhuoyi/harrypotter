@@ -81,4 +81,14 @@ $CC -O2 src/drawlab.c \
     -Wl,-rpath,/home/root/quill \
     -o build/drawlab
 
-echo "built: build/libquill.so build/scribble build/map_demo build/image_demo build/image_anim_demo build/gif_demo build/drawlab"
+# home: Remagic Home takeover session launcher.
+$CXX -O2 \
+    -I "$QTINC" -I "$QTINC/QtCore" -I "$QTINC/QtGui" \
+    src/home.cpp \
+    -L build -lquill \
+    -L vendor -lqsgepaper \
+    -lQt6Gui -lQt6Core -lstdc++ \
+    -Wl,-rpath,/home/root/quill \
+    -o build/home
+
+echo "built: build/libquill.so build/scribble build/map_demo build/image_demo build/image_anim_demo build/gif_demo build/drawlab build/home"

@@ -1,0 +1,8 @@
+{
+  "id": "drawlab",
+  "name": "Drawlab",
+  "version": "0.1.0",
+  "description": "Instant-ink drawing experiment: live pen, footstep sprites, vanishing trail.",
+  "application": "appload-launch.sh",
+  "qtfb": false
+}
