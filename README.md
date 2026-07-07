@@ -15,11 +15,24 @@ If that sounds like a lot, it isn't — **[remagic](https://github.com/maximeriv
 walks you through turning on developer mode and sets up everything with one
 command. Come back here, drop riddle in, and start writing to Tom.
 
-Already have xovi + AppLoad? **[Download the latest release](https://github.com/MaximeRivest/riddle/releases/latest)** — a ready-to-drop bundle, no compiler needed — or [build from source](#building).
+Already have xovi + AppLoad? Install from the [remagic](https://github.com/maximerivest/remagic)
+catalog, [grab the prebuilt bundle](#install-the-prebuilt-bundle), or
+[build from source](#building).
+
+### Install with remagic (easiest)
+
+```sh
+remagic install riddle     # checksum-verified download → AppLoad
+remagic config riddle      # settings form in your browser (+ QR for phone)
+```
+
+Then in **AppLoad**: tap **Reload**, then **The Diary**. Write, and rest your
+pen. (Or install it from the **Store** app right on the tablet.)
 
 ### Install the prebuilt bundle
 
-1. Grab `riddle-appload-aarch64.zip` from the [latest release](https://github.com/MaximeRivest/riddle/releases/latest) and unzip it.
+1. Grab `riddle-<version>.zip` from the [latest release](https://github.com/MaximeRivest/riddle/releases/latest)
+   and unzip it into a folder: `unzip riddle-*.zip -d riddle`
 2. Copy the folder to your tablet:
    `scp -O -r riddle root@10.11.99.1:/home/root/xovi/exthome/appload/`
 3. Add an API key: `cp oracle.env.example oracle.env` in that folder and put your `RIDDLE_OPENAI_KEY` in it (any OpenAI-compatible key). Or skip it to use [pi](#option-b--pi-the-power-path).
@@ -51,11 +64,12 @@ Already have xovi + AppLoad? **[Download the latest release](https://github.com/
   synthesis (rasterize → Zhang-Suen thinning → stroke tracing → animated
   replay), the oracle process manager, and both display backends.
 - **`quill/`** — the takeover display host (C/C++). An
-  [epfb-re](https://github.com/asivery)-style QImage-constructor interposition
-  shim over the vendor `libqsgepaper.so` waveform engine, exposed as a small
-  C ABI (`quill_init` / `quill_buffer` / `quill_swap`) that riddle links
-  against with `--features takeover`. Includes `scribble`, a minimal
-  pen-to-glass latency demo.
+  [epfb-re](https://github.com/asivery/epfb-re)-style QImage-constructor
+  interposition shim over the vendor `libqsgepaper.so` waveform engine,
+  exposed as a small C ABI (`quill_init` / `quill_buffer` / `quill_swap`)
+  that riddle links against with `--features takeover`. Also carries a small
+  family of demos (`scribble`, a pen-to-glass latency test, plus map, image,
+  and GIF renderers).
 
 ## Gestures
 
@@ -83,15 +97,26 @@ server — anything that speaks the format. No extra software on the tablet.
 export RIDDLE_OPENAI_KEY="sk-..."                       # required
 export RIDDLE_OPENAI_BASE="https://api.openai.com/v1"   # optional (default)
 export RIDDLE_OPENAI_MODEL="gpt-4o-mini"                # optional; must see images
+export RIDDLE_OPENAI_REASONING="low"                    # thinking models only
+export RIDDLE_OPENAI_MAX_TOKENS="2000"                  # runaway guard
 ```
 
-Any vision-capable model works. Example with OpenRouter:
+Any vision-capable model works. On the tablet these live in `oracle.env`
+next to the binary (see `oracle.env.example`, or just run
+`remagic config riddle` — it has one-tap presets for OpenAI, OpenRouter,
+and Gemini). Example with OpenRouter:
 
 ```sh
 export RIDDLE_OPENAI_KEY="$OPENROUTER_API_KEY"
 export RIDDLE_OPENAI_BASE="https://openrouter.ai/api/v1"
 export RIDDLE_OPENAI_MODEL="openai/gpt-4o-mini"
 ```
+
+Two gotchas with thinking models (Gemini 3.x, o-series): set
+`RIDDLE_OPENAI_REASONING=low` for faster first ink (some providers reject
+the field on non-thinking models — leave it unset there), and keep
+`RIDDLE_OPENAI_MAX_TOKENS` roomy — hidden reasoning tokens count against it,
+and a tight cap starves the visible reply.
 
 Verify your setup before launching the diary:
 
@@ -135,16 +160,19 @@ vendor Qt libs need its glibc, **and** `libqsgepaper.so` pulled from *your own
 device* (it is proprietary and not distributed here):
 
 ```sh
-cd quill && ./build.sh          # pulls libqsgepaper.so from the device over ssh,
-                                # builds libquill.so + scribble
+cd quill && ./build.sh              # pulls libqsgepaper.so from the device over
+                                    # ssh, builds libquill.so + the demos
 cd ../riddle && ./build-takeover.sh
+./scripts/make-bundle.sh            # stages the AppLoad bundle in dist/riddle/
 ```
 
-Deploy `libquill.so` to `/home/root/quill/` and `riddle-takeover` to
-`/home/root/riddle/riddle`, plus `scripts/riddle-takeover.sh`. Launching via
-AppLoad (`appload-launch.sh`) detaches into a transient systemd unit, stops
-xochitl, runs the diary, and **always restores xochitl on exit** — exit with
-the power button, a 5-finger tap, or SIGTERM. If anything wedges:
+The staged `dist/riddle/` is self-contained (binary, `libquill.so`, launch
+scripts, manifest) — copy it to
+`/home/root/xovi/exthome/appload/riddle/`, or publish it to the catalog with
+`remagic publish dist/riddle`. Launching via AppLoad (`appload-launch.sh`)
+detaches into a transient systemd unit, stops xochitl, runs the diary, and
+**always restores xochitl on exit** — exit with the power button, a 5-finger
+tap, or SIGTERM. If anything wedges:
 `ssh root@10.11.99.1 'systemctl start xochitl'`.
 
 ## Fonts
