@@ -1,0 +1,8 @@
+{
+  "id": "inktype",
+  "name": "InkType",
+  "version": "0.1.0",
+  "description": "Pen-up handwriting that resolves into editable typeset text.",
+  "application": "appload-launch.sh",
+  "qtfb": false
+}

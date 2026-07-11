@@ -1,0 +1,13 @@
+{
+  "title": "InkType — recognition settings",
+  "env": "oracle.env",
+  "fields": [
+    {"key":"INKTYPE_OPENAI_KEY","label":"API key","kind":"secret","help":"Stored only on the tablet."},
+    {"key":"INKTYPE_OPENAI_BASE","label":"OpenAI-compatible base URL","kind":"text","placeholder":"https://generativelanguage.googleapis.com/v1beta/openai"},
+    {"key":"INKTYPE_OPENAI_MODEL","label":"Fast vision model","kind":"text","placeholder":"gemini-3.1-flash-lite"}
+  ],
+  "presets": [
+    {"name":"Gemini Flash","values":{"INKTYPE_OPENAI_BASE":"https://generativelanguage.googleapis.com/v1beta/openai","INKTYPE_OPENAI_MODEL":"gemini-3.1-flash-lite"}},
+    {"name":"OpenAI","values":{"INKTYPE_OPENAI_BASE":"https://api.openai.com/v1","INKTYPE_OPENAI_MODEL":"gpt-4o-mini"}}
+  ]
+}
