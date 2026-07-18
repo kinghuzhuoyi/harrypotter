@@ -44,6 +44,11 @@ test("extracts JSON from markdown code fences", () => {
   });
 });
 
+test("repairs JSON whose values were escaped twice by the provider", () => {
+  const raw = '{\n  "transcript": \\"HI\\",\\n  \\"reply\\": \\"A quiet hello.\\"\\n}\\n';
+  assert.deepEqual(parseModelTurn(raw), { transcript: "HI", reply: "A quiet hello." });
+});
+
 function response(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }

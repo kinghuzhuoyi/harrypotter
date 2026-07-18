@@ -46,7 +46,17 @@ export function parseModelTurn(raw) {
       reply: String(parsed.reply || "").trim() || "墨水没有留下回答。"
     };
   } catch {
-    return { transcript: "", reply: candidate || "墨水没有留下回答。" };
+    try {
+      const repaired = JSON.parse(
+        jsonCandidate.replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t")
+      );
+      return {
+        transcript: String(repaired.transcript || "").trim(),
+        reply: String(repaired.reply || "").trim() || "墨水没有留下回答。"
+      };
+    } catch {
+      return { transcript: "", reply: candidate || "墨水没有留下回答。" };
+    }
   }
 }
 
