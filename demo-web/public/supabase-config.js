@@ -1,5 +1,4 @@
 window.RIDDLE_SUPABASE = {
-  url: "YOUR_SUPABASE_PROJECT_URL",
-  publishableKey: "YOUR_SUPABASE_PUBLISHABLE_OR_ANON_KEY"
+  url: "https://dnusbsudohdxyomcghds.supabase.co",
+  publishableKey: "sb_publishable_Zx6r7oFJoZg7ogYboP9I4g_y2VYwA5Q"
 };
-

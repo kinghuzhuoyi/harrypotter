@@ -1,4 +1,4 @@
-create table public.memories (
+create table if not exists public.memories (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
   created_at timestamptz not null default now(),
@@ -8,21 +8,24 @@ create table public.memories (
   model text not null
 );
 
-create index memories_user_created_at_idx
+create index if not exists memories_user_created_at_idx
   on public.memories (user_id, created_at desc);
 
 alter table public.memories enable row level security;
 
+drop policy if exists "Users can read their memories" on public.memories;
 create policy "Users can read their memories"
   on public.memories for select
   to authenticated
   using ((select auth.uid()) = user_id);
 
+drop policy if exists "Users can create their memories" on public.memories;
 create policy "Users can create their memories"
   on public.memories for insert
   to authenticated
   with check ((select auth.uid()) = user_id);
 
+drop policy if exists "Users can delete their memories" on public.memories;
 create policy "Users can delete their memories"
   on public.memories for delete
   to authenticated
@@ -35,6 +38,7 @@ on conflict (id) do update set
   file_size_limit = excluded.file_size_limit,
   allowed_mime_types = excluded.allowed_mime_types;
 
+drop policy if exists "Users can read their diary pages" on storage.objects;
 create policy "Users can read their diary pages"
   on storage.objects for select
   to authenticated
@@ -43,6 +47,7 @@ create policy "Users can read their diary pages"
     and (storage.foldername(name))[1] = (select auth.uid())::text
   );
 
+drop policy if exists "Users can create their diary pages" on storage.objects;
 create policy "Users can create their diary pages"
   on storage.objects for insert
   to authenticated
@@ -51,6 +56,7 @@ create policy "Users can create their diary pages"
     and (storage.foldername(name))[1] = (select auth.uid())::text
   );
 
+drop policy if exists "Users can delete their diary pages" on storage.objects;
 create policy "Users can delete their diary pages"
   on storage.objects for delete
   to authenticated
@@ -58,4 +64,3 @@ create policy "Users can delete their diary pages"
     bucket_id = 'diary-pages'
     and (storage.foldername(name))[1] = (select auth.uid())::text
   );
-
