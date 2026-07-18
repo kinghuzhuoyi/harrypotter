@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { postWithModelFallback, userFacingApiError } from "./oracle-client.js";
+import { parseModelTurn, postWithModelFallback, userFacingApiError } from "./oracle-client.js";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_DIR = join(ROOT, "public");
@@ -104,17 +104,6 @@ async function askOracle(imageDataUrl, memories) {
   if (!raw) throw new Error("模型没有返回回答。");
   if (usedModel !== model) console.log(`riddle: model fallback ${model} -> ${usedModel}`);
   return parseModelTurn(raw);
-}
-
-function parseModelTurn(raw) {
-  const text = Array.isArray(raw) ? raw.map((part) => part.text || "").join("") : String(raw);
-  const candidate = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  try {
-    const parsed = JSON.parse(candidate);
-    return { transcript: String(parsed.transcript || "").trim(), reply: String(parsed.reply || "").trim() || "墨水没有留下回答。" };
-  } catch {
-    return { transcript: "", reply: candidate || "墨水没有留下回答。" };
-  }
 }
 
 async function serveStatic(pathname, response) {

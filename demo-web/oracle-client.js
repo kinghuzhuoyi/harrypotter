@@ -33,6 +33,23 @@ export function userFacingApiError(status, providerError) {
   return message ? `智谱请求失败：${message.slice(0, 160)}` : `智谱接口返回 HTTP ${status}。`;
 }
 
+export function parseModelTurn(raw) {
+  const text = Array.isArray(raw) ? raw.map((part) => part.text || "").join("") : String(raw);
+  const withoutThinking = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const answer = withoutThinking.match(/<answer>([\s\S]*?)<\/answer>/i)?.[1] || withoutThinking;
+  const candidate = answer.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  const jsonCandidate = candidate.match(/\{[\s\S]*\}/)?.[0] || candidate;
+  try {
+    const parsed = JSON.parse(jsonCandidate);
+    return {
+      transcript: String(parsed.transcript || "").trim(),
+      reply: String(parsed.reply || "").trim() || "墨水没有留下回答。"
+    };
+  } catch {
+    return { transcript: "", reply: candidate || "墨水没有留下回答。" };
+  }
+}
+
 function unique(values) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
