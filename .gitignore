@@ -6,3 +6,4 @@
 /oracle.env
 /demo-web/.env
 /demo-web/data/
+.gstack/
