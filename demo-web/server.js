@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { postWithModelFallback, userFacingApiError } from "./oracle-client.js";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PUBLIC_DIR = join(ROOT, "public");
@@ -69,6 +70,7 @@ server.listen(PORT, HOST, () => {
 async function askOracle(imageDataUrl, memories) {
   const base = (process.env.RIDDLE_OPENAI_BASE || "https://open.bigmodel.cn/api/paas/v4").replace(/\/$/, "");
   const model = process.env.RIDDLE_OPENAI_MODEL || "glm-4.6v-flash";
+  const fallbackModels = (process.env.RIDDLE_MODEL_FALLBACKS || "glm-4.1v-thinking-flash,glm-4v-flash").split(",");
   const turns = Math.max(0, Number(process.env.MEMORY_TURNS || 6));
   const history = memories.slice(-turns).map(({ transcript, reply, createdAt }) => ({ written: transcript, answer: reply, date: createdAt }));
   const system = [
@@ -80,18 +82,19 @@ async function askOracle(imageDataUrl, memories) {
     "Never mention images, OCR, models or AI. If unreadable, say the ink is unclear."
   ].join(" ");
   const userText = history.length ? `Recent diary memories, oldest first:\n${JSON.stringify(history)}\n\nRead and answer the new writing.` : "Read and answer the new writing.";
-  const apiResponse = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.RIDDLE_OPENAI_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model, temperature: 0.7, max_tokens: 500,
+  const { response: apiResponse, payload, model: usedModel } = await postWithModelFallback({
+    base,
+    key: process.env.RIDDLE_OPENAI_KEY,
+    models: [model, ...fallbackModels],
+    body: {
+      temperature: 0.7,
+      max_tokens: 500,
       messages: [
         { role: "system", content: system },
         { role: "user", content: [{ type: "text", text: userText }, { type: "image_url", image_url: { url: imageDataUrl } }] }
       ]
-    })
+    }
   });
-  const payload = await apiResponse.json().catch(() => ({}));
   if (!apiResponse.ok) {
     const error = new Error(userFacingApiError(apiResponse.status, payload.error));
     error.statusCode = 502;
@@ -99,23 +102,8 @@ async function askOracle(imageDataUrl, memories) {
   }
   const raw = payload.choices?.[0]?.message?.content;
   if (!raw) throw new Error("模型没有返回回答。");
+  if (usedModel !== model) console.log(`riddle: model fallback ${model} -> ${usedModel}`);
   return parseModelTurn(raw);
-}
-
-function userFacingApiError(status, providerError) {
-  const message = String(providerError?.message || "");
-  const code = String(providerError?.code || "");
-  if (status === 401 || /invalid.*(key|token)|令牌|鉴权/i.test(message)) {
-    return "智谱 API Key 无效，请检查 demo-web/.env。";
-  }
-  if (status === 429 || /quota|余额|次数|rate.?limit/i.test(`${code} ${message}`)) {
-    return "智谱 API 额度不足或请求过快，请检查账户余额后重试。";
-  }
-  if (status === 400 && /model/i.test(message)) {
-    return "当前智谱模型名称或请求格式不受支持，请检查模型配置。";
-  }
-  if (status >= 500) return "智谱服务暂时不可用，请稍后重试。";
-  return message ? `智谱请求失败：${message.slice(0, 160)}` : `智谱接口返回 HTTP ${status}。`;
 }
 
 function parseModelTurn(raw) {
