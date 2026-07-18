@@ -2,5 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "harrypotter",
   "compatibility_date": "2026-07-19",
-  "pages_build_output_dir": "./demo-web/public"
+  "assets": {
+    "directory": "./demo-web/public"
+  }
 }
