@@ -1,22 +1,54 @@
 # 浏览器白板 Demo
 
-支持 PC 鼠标、触屏和 iPad Apple Pencil 的最小手写 AI 日记。
+支持 PC 鼠标、触屏和 iPad Apple Pencil。业务后端已完整迁移到 Supabase：匿名身份由 Supabase Auth 管理，记忆写入 Postgres，截图写入私有 Storage，智谱请求由 Edge Function 发起。
 
-## 启动
+## Supabase 项目配置
 
-1. 在[智谱开放平台](https://open.bigmodel.cn/)创建 API Key。
-2. 复制 `.env.example` 为 `.env`，填写智谱 API Key。默认配置如下：
+1. 创建 Supabase 项目，在 Dashboard 的 Authentication 设置中启用 Anonymous Sign-Ins。
+2. 安装 Supabase CLI，在仓库根目录登录并连接项目：
 
-   ```env
-   RIDDLE_OPENAI_KEY=your-zhipu-api-key
-   RIDDLE_OPENAI_BASE=https://open.bigmodel.cn/api/paas/v4
-   RIDDLE_OPENAI_MODEL=glm-4.6v-flash
+   ```sh
+   supabase login
+   supabase link --project-ref YOUR_PROJECT_REF
    ```
 
-   环境变量沿用原名称，但服务商已经切换为智谱。
-3. 使用 Node.js 20 或更高版本运行 `npm.cmd start`。
-4. PC 打开 `http://localhost:4173`；iPad 与电脑连接同一局域网后，打开启动日志中的 LAN 地址。
+3. 部署数据库 migration、智谱 Secret 和 Edge Function：
 
-对话记录保存在 `data/memories.json`，白板截图保存在 `data/images/`。这些数据和 `.env` 均已忽略，不会提交到 Git。
+   ```sh
+   supabase db push
+   supabase secrets set ZHIPU_API_KEY=YOUR_ZHIPU_API_KEY
+   supabase functions deploy ask-diary
+   ```
 
-Demo 默认监听所有局域网地址且没有鉴权，只应在可信网络运行。截图和近期文字记忆会发送给配置的模型服务商。
+   可选 Secret：`ZHIPU_API_BASE`、`ZHIPU_MODEL`、`ZHIPU_MODEL_FALLBACKS`。不要把真实智谱 Key 写进仓库。
+
+4. 从 Supabase Dashboard 的 API 设置复制 Project URL 和 Publishable Key（旧项目也可以使用 Anon Key），填写 `public/supabase-config.js`：
+
+   ```js
+   window.RIDDLE_SUPABASE = {
+     url: "https://YOUR_PROJECT_REF.supabase.co",
+     publishableKey: "sb_publishable_..."
+   };
+   ```
+
+Project URL 和 Publishable/Anon Key 本来就是浏览器端公开配置；数据安全由用户 JWT、RLS 和 Storage Policy 保证。智谱 Key 只能存在于 Supabase Edge Function Secret。
+
+## 本地启动
+
+使用 Node.js 20 或更高版本：
+
+```sh
+cd demo-web
+npm start
+```
+
+PC 打开 `http://localhost:4173`。iPad 与电脑连接同一局域网后，打开启动日志中的 LAN 地址。本地 Node 服务现在只提供静态文件，不再保存数据或持有智谱 Key。
+
+## 云端资源
+
+- Migration：`supabase/migrations/20260718000100_create_memories.sql`
+- Edge Function：`supabase/functions/ask-diary/index.ts`
+- 私有 Bucket：`diary-pages`
+- 数据表：`public.memories`
+
+匿名用户清除浏览器站点数据后会生成新的身份，无法再读取旧匿名身份的数据。

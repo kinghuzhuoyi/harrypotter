@@ -1,0 +1,5 @@
+project_id = "riddle-diary"
+
+[functions.ask-diary]
+verify_jwt = true
+
