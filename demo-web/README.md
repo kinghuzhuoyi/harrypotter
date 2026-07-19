@@ -2,6 +2,8 @@
 
 支持 PC 鼠标、触屏和 iPad Apple Pencil。业务后端已完整迁移到 Supabase：匿名身份由 Supabase Auth 管理，记忆写入 Postgres，截图写入私有 Storage，智谱请求由 Edge Function 发起。
 
+当前白板使用压力与速度共同控制的钢笔笔触。用户停笔 3 秒后页面自动提交，墨迹逐渐被纸张吸收；回答以手写字体逐字出现，完成后停留 12 秒自动淡去，也可以在纸面滑动提前清除。
+
 ## Supabase 项目配置
 
 1. 创建 Supabase 项目，在 Dashboard 的 Authentication 设置中启用 Anonymous Sign-Ins。
